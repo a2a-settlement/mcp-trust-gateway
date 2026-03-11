@@ -1,0 +1,11 @@
+name: mcp_trust_gateway
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - ipython
+  - jupyterlab
+  - pytest
+  - python-dotenv

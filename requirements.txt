@@ -1,0 +1,4 @@
+# Base dependencies for MCP Trust Gateway
+mcp
+pydantic
+httpx
