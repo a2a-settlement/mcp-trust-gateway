@@ -291,6 +291,13 @@ mcp-trust-gateway/
 | [a2a-settlement-mcp](https://github.com/a2a-settlement/a2a-settlement-mcp) | MCP server exposing settlement operations as tools |
 | [a2a-settlement-mediator](https://github.com/a2a-settlement/a2a-settlement-mediator) | AI-powered dispute resolution |
 | [a2a-settlement-dashboard](https://github.com/a2a-settlement/a2a-settlement-dashboard) | Human oversight dashboard |
+| [settlebridge-ai](https://github.com/a2a-settlement/settlebridge-ai) | SettleBridge Gateway — trust/policy enforcement for settlement requests |
+| [otel-agent-provenance](https://github.com/a2a-settlement/otel-agent-provenance) | OpenTelemetry provenance conventions |
+| [a2a-federation-rfc](https://github.com/a2a-settlement/a2a-federation-rfc) | Federation protocol — trust discount across exchanges |
+| [langgraph-a2a-settlement](https://github.com/a2a-settlement/langgraph-a2a-settlement) | LangGraph integration |
+| [crewai-a2a-settlement](https://github.com/a2a-settlement/crewai-a2a-settlement) | CrewAI integration |
+| [litellm-a2a-settlement](https://github.com/a2a-settlement/litellm-a2a-settlement) | LiteLLM integration |
+| [adk-a2a-settlement](https://github.com/a2a-settlement/adk-a2a-settlement) | Google ADK integration |
 
 **This gateway vs a2a-settlement-mcp:** The [MCP server](https://github.com/a2a-settlement/a2a-settlement-mcp) exposes settlement *operations* as tools (create escrow, check balance, etc.). This gateway evaluates *trust* on MCP tool invocations. They are complementary — you might use the MCP server behind this gateway, or use the gateway to protect any other MCP server.
 
