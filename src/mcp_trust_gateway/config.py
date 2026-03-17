@@ -118,3 +118,67 @@ def get_upstream_servers() -> list[dict]:
     except (json.JSONDecodeError, TypeError):
         pass
     return []
+
+
+# -- Federation ----------------------------------------------------------------
+
+def get_federation_enabled() -> bool:
+    return _get_bool("FEDERATION_ENABLED", False)
+
+
+def get_federation_peers() -> list[dict]:
+    """Parse federation peer definitions from env.
+
+    Format: FEDERATION_PEERS='[{"did":"did:web:...","health_url":"https://..."}]'
+    """
+    import json
+
+    raw = os.environ.get("FEDERATION_PEERS", "").strip()
+    if not raw:
+        return []
+    try:
+        peers = json.loads(raw)
+        if isinstance(peers, list):
+            return peers
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return []
+
+
+def get_trust_discount_algorithm() -> str:
+    return _get_str(
+        "TRUST_DISCOUNT_ALGORITHM",
+        "urn:a2a:trust:discount:linear-volume-weighted-v1",
+    )
+
+
+def get_trust_discount_params() -> dict:
+    """Parse Trust Discount algorithm parameters from env."""
+    import json
+
+    raw = os.environ.get("TRUST_DISCOUNT_PARAMS", "").strip()
+    if not raw:
+        return {
+            "volume_threshold_ate": 10000,
+            "rho_at_threshold": 0.40,
+            "max_rho": 0.85,
+            "attestation_success_floor": 0.92,
+            "review_cadence_days": 30,
+        }
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def get_trust_discount_initial_rho() -> float:
+    return _get_float("TRUST_DISCOUNT_INITIAL_RHO", 0.15)
+
+
+def get_health_check_interval() -> int:
+    """Federation health check interval in seconds."""
+    return _get_int("FEDERATION_HEALTH_CHECK_INTERVAL_S", 300)
+
+
+def get_rho_decay_rate() -> float:
+    return _get_float("FEDERATION_RHO_DECAY_RATE", 0.9)

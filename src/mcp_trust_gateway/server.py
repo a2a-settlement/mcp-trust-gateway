@@ -25,6 +25,13 @@ from .config import (
     get_oauth_algorithm,
     get_oauth_audience,
     get_trust_decay_factor,
+    get_federation_enabled,
+    get_federation_peers,
+    get_trust_discount_algorithm,
+    get_trust_discount_params,
+    get_trust_discount_initial_rho,
+    get_health_check_interval,
+    get_rho_decay_rate,
 )
 from .discovery.registry import ToolRegistry
 from .discovery.well_known import well_known_mcp_tools
@@ -220,16 +227,48 @@ def create_app() -> Starlette:
         Route("/mcp", mcp_endpoint, methods=["POST"]),
     ]
 
+    # Federation support
+    federation_health_monitor = None
+    federation_well_known = None
+    if get_federation_enabled():
+        from .federation import AlgorithmRegistry, FederationHealthMonitor
+        from .federation.well_known import FederationWellKnown
+
+        algorithm_registry = AlgorithmRegistry()
+        federation_health_monitor = FederationHealthMonitor(
+            check_interval_seconds=get_health_check_interval(),
+            decay_rate=get_rho_decay_rate(),
+        )
+        federation_well_known = FederationWellKnown(
+            algorithm_id=get_trust_discount_algorithm(),
+            initial_rho=get_trust_discount_initial_rho(),
+            parameters=get_trust_discount_params(),
+        )
+
+        for peer_def in get_federation_peers():
+            peer_did = peer_def.get("did", "")
+            health_url = peer_def.get("health_url", "")
+            if peer_did and health_url:
+                federation_health_monitor.add_peer(peer_did, health_url)
+
+        routes.append(
+            Route(
+                "/.well-known/a2a-trust-policy.json",
+                federation_well_known.handle_trust_policy,
+                methods=["GET"],
+            )
+        )
+
     app = Starlette(routes=routes)
     app.state.tool_registry = registry
     app.state.trust_evaluator = evaluator
     app.state.upstream_proxy = proxy
+    app.state.federation_health_monitor = federation_health_monitor
+    app.state.federation_well_known = federation_well_known
 
     @app.on_event("startup")
     async def _startup() -> None:
-        # Discover tools from all configured upstream servers
         await proxy.discover_all_upstream_tools()
-        # Sync evaluator with registry
         for name, tool in registry.tools.items():
             evaluator.register_tool(name, tool.trust_requirements)
         logger.info(
@@ -237,5 +276,16 @@ def create_app() -> Starlette:
             len(registry.servers),
             len(registry.tools),
         )
+        if federation_health_monitor and get_federation_enabled():
+            await federation_health_monitor.start()
+            logger.info(
+                "Federation health monitor started: %d peers",
+                len(federation_health_monitor.all_peers()),
+            )
+
+    @app.on_event("shutdown")
+    async def _shutdown() -> None:
+        if federation_health_monitor:
+            await federation_health_monitor.stop()
 
     return app
