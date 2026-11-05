@@ -47,6 +47,12 @@ def client(app):
     return TestClient(app)
 
 
+def test_lifespan_startup_and_shutdown(monkeypatch):
+    monkeypatch.delenv("MCP_UPSTREAM_SERVERS", raising=False)
+    with TestClient(create_app()) as running:
+        assert running.get("/health").status_code == 200
+
+
 def _make_token(agent_id="a1", kya=1, rep=0.8, depth=0, scopes="mcp:read mcp:tool:write") -> str:
     now = int(time.time())
     payload = {

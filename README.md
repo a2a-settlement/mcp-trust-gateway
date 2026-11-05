@@ -254,6 +254,8 @@ Add to `.cursor/mcp.json`:
 
 ## Production configuration
 
+Install with the tested dependency versions: `pip install -c constraints.txt -e .`
+
 SettleBridge verifies RS256 tokens from this gateway. Configure:
 
 - `OAUTH_ALGORITHM=RS256`
