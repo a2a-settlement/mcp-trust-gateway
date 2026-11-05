@@ -11,6 +11,8 @@ Exposes:
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import jwt as pyjwt
 from starlette.applications import Starlette
@@ -259,15 +261,8 @@ def create_app() -> Starlette:
             )
         )
 
-    app = Starlette(routes=routes)
-    app.state.tool_registry = registry
-    app.state.trust_evaluator = evaluator
-    app.state.upstream_proxy = proxy
-    app.state.federation_health_monitor = federation_health_monitor
-    app.state.federation_well_known = federation_well_known
-
-    @app.on_event("startup")
-    async def _startup() -> None:
+    @asynccontextmanager
+    async def lifespan(app: Starlette) -> AsyncIterator[None]:
         await proxy.discover_all_upstream_tools()
         for name, tool in registry.tools.items():
             evaluator.register_tool(name, tool.trust_requirements)
@@ -282,10 +277,17 @@ def create_app() -> Starlette:
                 "Federation health monitor started: %d peers",
                 len(federation_health_monitor.all_peers()),
             )
+        try:
+            yield
+        finally:
+            if federation_health_monitor:
+                await federation_health_monitor.stop()
 
-    @app.on_event("shutdown")
-    async def _shutdown() -> None:
-        if federation_health_monitor:
-            await federation_health_monitor.stop()
+    app = Starlette(routes=routes, lifespan=lifespan)
+    app.state.tool_registry = registry
+    app.state.trust_evaluator = evaluator
+    app.state.upstream_proxy = proxy
+    app.state.federation_health_monitor = federation_health_monitor
+    app.state.federation_well_known = federation_well_known
 
     return app
