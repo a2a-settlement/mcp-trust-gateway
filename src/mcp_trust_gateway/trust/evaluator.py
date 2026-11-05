@@ -15,16 +15,16 @@ from urllib.parse import quote
 import httpx
 
 from ..config import (
-    get_exchange_url,
     get_exchange_api_key,
     get_exchange_timeout,
+    get_exchange_url,
     get_reputation_cache_ttl,
 )
 from .scope_mapper import (
     KYA_LEVEL_NAMES,
+    MCPScope,
     ToolTrustRequirements,
     default_requirements_for_scope,
-    MCPScope,
 )
 from .trust_decay import TrustScore, compute_trust_score
 
@@ -140,7 +140,9 @@ async def authenticate_exchange_api_key(
     cannot support a trust claim. The key is never logged.
     """
     url = f"{get_exchange_url()}/v1/exchange/balance"
-    headers = {"Authorization": f"Bearer {api_key}"}
+    # The account hint lets the exchange check one key hash instead of
+    # every account's. Exchanges that predate the header ignore it.
+    headers = {"Authorization": f"Bearer {api_key}", "X-A2A-Account-Id": client_id}
     try:
         async with exchange_client() as client:
             resp = await client.get(url, headers=headers)

@@ -93,6 +93,7 @@ class FakeExchange:
         self.account_body = account_body
         self.paths: list[str] = []
         self.card_authorization: list[str | None] = []
+        self.balance_account_hints: list[str | None] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.paths.append(request.url.path)
@@ -107,6 +108,7 @@ class FakeExchange:
         return httpx.Response(404, json={"error": "not_found"})
 
     def _balance(self, request: httpx.Request) -> httpx.Response:
+        self.balance_account_hints.append(request.headers.get("x-a2a-account-id"))
         if self.balance_mode == "down":
             raise httpx.ConnectError("down")
         if self.balance_mode == "unauthorized":
@@ -189,6 +191,7 @@ class TestClientCredentials:
 
         resp = _post_token(client, how, scope="mcp:read mcp:tool:financial")
         assert resp.status_code == 200, resp.text
+        assert fake.balance_account_hints == [AGENT]
         body = resp.json()
         assert body["token_type"] == "Bearer"
         assert body["expires_in"] == 3600
