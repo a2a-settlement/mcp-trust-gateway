@@ -17,6 +17,7 @@ import httpx
 from ..config import (
     get_exchange_url,
     get_exchange_api_key,
+    get_exchange_timeout,
     get_reputation_cache_ttl,
 )
 from .scope_mapper import (
@@ -119,7 +120,7 @@ class ExchangePrincipal:
 
 def exchange_client() -> httpx.AsyncClient:
     """HTTP client for exchange calls. Tests replace this; it does not log."""
-    return httpx.AsyncClient(timeout=5.0)
+    return httpx.AsyncClient(timeout=get_exchange_timeout())
 
 
 def _safe_log_id(agent_id: str) -> str:

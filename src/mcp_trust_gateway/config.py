@@ -37,6 +37,16 @@ def get_exchange_url() -> str:
     return _get_str("A2A_EXCHANGE_URL", "http://localhost:3000").rstrip("/")
 
 
+def get_exchange_timeout() -> float:
+    """Seconds to wait for an exchange response.
+
+    The exchange checks an API key against each account's bcrypt hash in turn,
+    so rejecting an invalid key takes several seconds and grows with the
+    number of accounts.
+    """
+    return _get_float("A2A_EXCHANGE_TIMEOUT_S", 15.0)
+
+
 def get_exchange_api_key() -> str:
     """API key for exchange queries (reputation, directory, KYA lookups)."""
     return _get_str("A2A_EXCHANGE_API_KEY", "")

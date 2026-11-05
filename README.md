@@ -256,6 +256,10 @@ Add to `.cursor/mcp.json`:
 
 Install with the tested dependency versions: `pip install -c constraints.txt -e .`
 
+`A2A_EXCHANGE_TIMEOUT_S` (default 15) bounds each exchange call. The exchange
+rejects an invalid API key only after checking it against every account's
+bcrypt hash, which takes several seconds.
+
 SettleBridge verifies RS256 tokens from this gateway. Configure:
 
 - `OAUTH_ALGORITHM=RS256`
