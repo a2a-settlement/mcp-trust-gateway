@@ -1,6 +1,5 @@
 """End-to-end tests for the gateway server."""
 
-import os
 import time
 
 import pytest
@@ -10,7 +9,7 @@ from starlette.testclient import TestClient
 from mcp_trust_gateway.server import create_app
 from mcp_trust_gateway.trust.scope_mapper import ToolTrustRequirements, MCPScope
 
-SIGNING_KEY = "test-server-secret"
+SIGNING_KEY = "test-server-hmac-key-32bytes-minimum"
 ALGORITHM = "HS256"
 AUDIENCE = "https://gateway.a2a-settlement.org"
 CLAIMS_NAMESPACE = "https://a2a-settlement.org/claims"
@@ -19,6 +18,9 @@ CLAIMS_NAMESPACE = "https://a2a-settlement.org/claims"
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
     monkeypatch.setenv("OAUTH_SIGNING_KEY", SIGNING_KEY)
+    monkeypatch.delenv("OAUTH_SIGNING_KEY_FILE", raising=False)
+    monkeypatch.delenv("OAUTH_AUTHORIZE_ENABLED", raising=False)
+    monkeypatch.delenv("MCP_TRUST_FINANCIAL_ALLOWLIST", raising=False)
     monkeypatch.setenv("OAUTH_ALGORITHM", ALGORITHM)
     monkeypatch.setenv("OAUTH_AUDIENCE", AUDIENCE)
     monkeypatch.setenv("OAUTH_ISSUER", "https://test.example.com")
@@ -95,6 +97,11 @@ class TestWellKnown:
         assert "authorization_endpoint" in data
         assert "token_endpoint" in data
         assert "urn:ietf:params:oauth:grant-type:token-exchange" in data["grant_types_supported"]
+        assert "client_credentials" in data["grant_types_supported"]
+
+    def test_jwks_absent_for_hmac(self, client):
+        resp = client.get("/.well-known/jwks.json")
+        assert resp.status_code == 404
 
     def test_oauth_protected_resource(self, client):
         resp = client.get("/.well-known/oauth-protected-resource")

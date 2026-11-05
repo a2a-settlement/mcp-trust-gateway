@@ -196,6 +196,8 @@ python -m mcp_trust_gateway
 
 The gateway starts on port 3100, proxying to upstream MCP servers registered in the exchange's agent directory.
 
+Token issuance uses `grant_type=client_credentials` unless `OAUTH_AUTHORIZE_ENABLED=true`. See [Production configuration](#production-configuration).
+
 ### 2. Connect Claude Desktop
 
 Add to `claude_desktop_config.json`:
@@ -242,7 +244,41 @@ Add to `.cursor/mcp.json`:
 | `MCP_TRUST_MIN_REPUTATION` | `0.0` | Global minimum reputation floor |
 | `MCP_TRUST_DEFAULT_KYA` | `0` | Default KYA level for unverified agents |
 | `OAUTH_ISSUER` | (required) | OAuth token issuer URL |
-| `OAUTH_SIGNING_KEY` | (required) | Key for signing issued tokens |
+| `OAUTH_SIGNING_KEY` | (required) | HMAC secret or PEM private key. Ignored when `OAUTH_SIGNING_KEY_FILE` is set |
+| `OAUTH_SIGNING_KEY_FILE` | (empty) | Path to a PEM private key. Overrides `OAUTH_SIGNING_KEY` |
+| `OAUTH_ALGORITHM` | `HS256` | `RS256` in production. `none` is rejected |
+| `OAUTH_AUDIENCE` | `https://gateway.a2a-settlement.org` | `aud` claim |
+| `OAUTH_TOKEN_TTL` | `3600` | Access token lifetime in seconds |
+| `OAUTH_AUTHORIZE_ENABLED` | `false` | Enable the legacy authorization-code flow |
+| `MCP_TRUST_FINANCIAL_ALLOWLIST` | (empty) | Comma-separated agent ids allowed `mcp:tool:financial` |
+
+## Production configuration
+
+SettleBridge verifies RS256 tokens from this gateway. Configure:
+
+- `OAUTH_ALGORITHM=RS256`
+- `OAUTH_SIGNING_KEY_FILE` pointing at an unencrypted PEM private key (this takes precedence over `OAUTH_SIGNING_KEY`)
+- `OAUTH_ISSUER` and `OAUTH_AUDIENCE` to the values SettleBridge expects
+- `A2A_EXCHANGE_URL` so the gateway can reach `GET /v1/exchange/balance` and `GET /v1/accounts/{id}/card`
+
+Startup refuses to run if an asymmetric algorithm is set without a matching private key, if the algorithm is `none`, or if an HMAC key is shorter than 32 bytes. Those errors do not include key material.
+
+Agents obtain tokens with the client-credentials grant. `client_id` is the exchange account id and `client_secret` is that bot's `ate_` API key, in a form body, a JSON body, or HTTP Basic. The secret is sent once to the exchange balance endpoint and is not stored or logged. The account must be `active` and the balance `account_id` must match `client_id`. KYA comes from the public card (`kya_level_verified`); a missing card is KYA 0. A card or exchange failure fails closed.
+
+```bash
+curl -u "$ACCOUNT_ID:$A2A_API_KEY" \
+  -d "grant_type=client_credentials" \
+  -d "scope=mcp:read mcp:tool:financial" \
+  http://127.0.0.1:3100/oauth/token
+```
+
+When `MCP_TRUST_FINANCIAL_ALLOWLIST` is non-empty, `mcp:tool:financial` is issued only to those agent ids, including agents at KYA 0. Everyone else is denied that scope even at a higher KYA level. Other scopes still follow KYA rules. When the list is empty, financial scope requires KYA level 2 (AUDITABLE). The token's `trust.kya_level` is always the agent's real KYA level.
+
+The public key is published at `GET /.well-known/jwks.json` (`kty`, `n`, `e`, `kid`, `alg`, `use=sig`) for asymmetric keys. HMAC deployments return 404 there. Token headers include that `kid`.
+
+`GET /oauth/authorize` and `grant_type=authorization_code` return 400 unless `OAUTH_AUTHORIZE_ENABLED=true`. The enabled code flow is unchanged and does not verify an API key.
+
+Token exchange does not authenticate the delegate. It only narrows the parent token's scopes. With a non-empty financial allowlist, `mcp:tool:financial` is kept only when the parent already has it and the requested actor id is listed. An explicit request for financial by an unlisted actor is rejected. The actor id is not proof of identity.
 
 ## Project Structure
 
@@ -258,7 +294,8 @@ mcp-trust-gateway/
     server.py                      # MCP server (client-facing)
     proxy.py                       # MCP client (upstream-facing proxy)
     oauth/
-      provider.py                  # OAuth 2.1 + PKCE authorization endpoint
+      provider.py                  # client_credentials and optional PKCE
+      keys.py                      # RS256/HMAC signing and JWKS
       token_exchange.py            # RFC 8693 with trust decay
       metadata.py                  # RFC 8414 / RFC 9728 metadata
     trust/
