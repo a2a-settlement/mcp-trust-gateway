@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -20,7 +20,6 @@ from ..config import (
     get_reputation_cache_ttl,
 )
 from .scope_mapper import (
-    KYALevel,
     KYA_LEVEL_NAMES,
     ToolTrustRequirements,
     default_requirements_for_scope,
@@ -106,6 +105,85 @@ class _ReputationCache:
 _rep_cache = _ReputationCache()
 
 
+class ExchangeUnavailable(Exception):
+    """The exchange could not be queried. Callers must fail closed."""
+
+
+@dataclass(frozen=True)
+class ExchangePrincipal:
+    """Identity proven by the caller's own exchange API key."""
+
+    account_id: str
+    reputation: float
+
+
+def exchange_client() -> httpx.AsyncClient:
+    """HTTP client for exchange calls. Tests replace this; it does not log."""
+    return httpx.AsyncClient(timeout=5.0)
+
+
+def _safe_log_id(agent_id: str) -> str:
+    cleaned = "".join(ch for ch in agent_id if ch.isprintable())
+    return cleaned[:200]
+
+
+async def authenticate_exchange_api_key(
+    client_id: str,
+    api_key: str,
+) -> ExchangePrincipal | None:
+    """Prove ``client_id`` by calling the exchange balance route with ``api_key``.
+
+    The key is sent only on this request. Returns None when the key is
+    rejected, the account id does not match, or the account is not active.
+    Raises ExchangeUnavailable on network errors, 5xx, or a 200 body that
+    cannot support a trust claim. The key is never logged.
+    """
+    url = f"{get_exchange_url()}/v1/exchange/balance"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        async with exchange_client() as client:
+            resp = await client.get(url, headers=headers)
+    except Exception:
+        logger.warning("Exchange balance lookup failed")
+        raise ExchangeUnavailable() from None
+    if resp.status_code >= 500:
+        logger.warning("Exchange balance lookup returned %s", resp.status_code)
+        raise ExchangeUnavailable()
+    if resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+    except Exception:
+        raise ExchangeUnavailable() from None
+    if not isinstance(data, dict):
+        raise ExchangeUnavailable()
+    account_id = _account_id(data.get("account_id"))
+    if account_id is None or account_id != client_id or data.get("account_status") != "active":
+        return None
+    reputation = _reputation(data.get("reputation"))
+    if reputation is None:
+        raise ExchangeUnavailable()
+    return ExchangePrincipal(account_id=account_id, reputation=reputation)
+
+
+def _account_id(value: object) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    account_id = str(value).strip()
+    if not account_id or any(ch.isspace() for ch in account_id):
+        return None
+    return account_id
+
+
+def _reputation(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    reputation = float(value)
+    if reputation != reputation or reputation < 0.0 or reputation > 1.0:
+        return None
+    return reputation
+
+
 async def fetch_agent_reputation(agent_id: str) -> float | None:
     """Query the settlement exchange for an agent's current reputation.
 
@@ -123,38 +201,60 @@ async def fetch_agent_reputation(agent_id: str) -> float | None:
         headers["Authorization"] = f"Bearer {api_key}"
 
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with exchange_client() as client:
             resp = await client.get(url, headers=headers)
             if resp.status_code != 200:
-                logger.warning("Exchange returned %s for agent %s", resp.status_code, agent_id)
+                logger.warning(
+                    "Exchange returned %s for agent %s",
+                    resp.status_code,
+                    _safe_log_id(agent_id),
+                )
                 return None
             data = resp.json()
             rep = float(data.get("reputation", 0.5))
             _rep_cache.put(agent_id, rep)
             return rep
-    except Exception as exc:
-        logger.warning("Failed to fetch reputation for %s: %s", agent_id, exc)
+    except Exception:
+        logger.warning(
+            "Failed to fetch reputation for %s",
+            _safe_log_id(agent_id),
+        )
         return None
 
 
 async def fetch_agent_kya_level(agent_id: str) -> int | None:
-    """Query the settlement exchange for an agent's KYA level."""
-    base = get_exchange_url()
-    api_key = get_exchange_api_key()
-    url = f"{base}/api/v1/accounts/{agent_id}"
-    headers: dict[str, str] = {}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    """Return the verified KYA level from the public account card.
 
+    ``GET /v1/accounts/{id}/card`` is the source of ``kya_level_verified``.
+    A 404 (no account card) is KYA 0. Returns None when the exchange cannot
+    be queried or the card is unusable, so callers can fail closed.
+    """
+    url = f"{get_exchange_url()}/v1/accounts/{quote(agent_id, safe='')}/card"
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(url, headers=headers)
-            if resp.status_code != 200:
-                return None
-            data = resp.json()
-            return int(data.get("kya_level_verified", 0))
+        async with exchange_client() as client:
+            resp = await client.get(url)
     except Exception:
+        logger.warning("KYA card lookup failed for %s", _safe_log_id(agent_id))
         return None
+    if resp.status_code == 404:
+        return 0
+    if resp.status_code != 200:
+        logger.warning(
+            "KYA card lookup returned %s for %s",
+            resp.status_code,
+            _safe_log_id(agent_id),
+        )
+        return None
+    try:
+        data = resp.json()
+        level = data["kya_level_verified"]
+    except Exception:
+        logger.warning("KYA card payload unusable for %s", _safe_log_id(agent_id))
+        return None
+    if isinstance(level, bool) or not isinstance(level, int) or level < 0 or level > 5:
+        logger.warning("KYA card level unusable for %s", _safe_log_id(agent_id))
+        return None
+    return level
 
 
 @dataclass

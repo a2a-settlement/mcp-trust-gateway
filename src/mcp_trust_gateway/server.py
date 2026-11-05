@@ -10,9 +10,7 @@ Exposes:
 
 from __future__ import annotations
 
-import json
 import logging
-import time
 
 import jwt as pyjwt
 from starlette.applications import Starlette
@@ -21,30 +19,22 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from .config import (
-    get_oauth_signing_key,
-    get_oauth_algorithm,
-    get_oauth_audience,
-    get_trust_decay_factor,
     get_federation_enabled,
     get_federation_peers,
-    get_trust_discount_algorithm,
-    get_trust_discount_params,
-    get_trust_discount_initial_rho,
     get_health_check_interval,
+    get_oauth_audience,
     get_rho_decay_rate,
+    get_trust_discount_algorithm,
+    get_trust_discount_initial_rho,
+    get_trust_discount_params,
 )
 from .discovery.registry import ToolRegistry
 from .discovery.well_known import well_known_mcp_tools
+from .oauth.keys import SigningConfigError, decode_jwt, jwks_document, validate_signing_config
 from .oauth.metadata import authorization_server_metadata, protected_resource_metadata
 from .oauth.provider import authorize_endpoint, token_endpoint
 from .proxy import UpstreamProxy
 from .trust.evaluator import TrustEvaluator
-from .trust.scope_mapper import (
-    requirements_from_annotations,
-    default_requirements_for_scope,
-    MCPScope,
-)
-from .trust.trust_decay import compute_trust_score
 
 logger = logging.getLogger("mcp_trust_gateway")
 
@@ -59,15 +49,23 @@ def _extract_bearer(request: Request) -> str | None:
 
 
 def _decode_token(raw: str) -> dict | None:
-    signing_key = get_oauth_signing_key()
-    algorithm = get_oauth_algorithm()
-    audience = get_oauth_audience()
-    if not signing_key:
-        return None
+    """Verify a bearer token. Asymmetric tokens use the derived public key."""
     try:
-        return pyjwt.decode(raw, signing_key, algorithms=[algorithm], audience=audience)
-    except pyjwt.InvalidTokenError:
+        return decode_jwt(raw, audience=get_oauth_audience())
+    except (pyjwt.InvalidTokenError, SigningConfigError):
         return None
+
+
+async def jwks_endpoint(request: Request) -> JSONResponse:
+    """Public JWK set. HMAC deployments have nothing to publish."""
+    try:
+        document = jwks_document()
+    except SigningConfigError:
+        logger.error("JWKS is unavailable because the signing key is misconfigured")
+        return JSONResponse({"error": "server_error"}, status_code=500)
+    if document is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(document)
 
 
 async def health(request: Request) -> JSONResponse:
@@ -205,6 +203,7 @@ async def mcp_endpoint(request: Request) -> JSONResponse:
 
 def create_app() -> Starlette:
     """Build the Starlette application with all routes and shared state."""
+    validate_signing_config()
     registry = ToolRegistry()
     evaluator = TrustEvaluator()
     proxy = UpstreamProxy(registry)
@@ -219,6 +218,7 @@ def create_app() -> Starlette:
         # RFC 8414 / RFC 9728 metadata
         Route("/.well-known/oauth-authorization-server", authorization_server_metadata, methods=["GET"]),
         Route("/.well-known/oauth-protected-resource", protected_resource_metadata, methods=["GET"]),
+        Route("/.well-known/jwks.json", jwks_endpoint, methods=["GET"]),
 
         # Pre-auth tool discovery
         Route("/.well-known/mcp-tools", well_known_mcp_tools, methods=["GET"]),
@@ -234,7 +234,7 @@ def create_app() -> Starlette:
         from .federation import AlgorithmRegistry, FederationHealthMonitor
         from .federation.well_known import FederationWellKnown
 
-        algorithm_registry = AlgorithmRegistry()
+        _algorithm_registry = AlgorithmRegistry()
         federation_health_monitor = FederationHealthMonitor(
             check_interval_seconds=get_health_check_interval(),
             decay_rate=get_rho_decay_rate(),

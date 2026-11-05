@@ -85,8 +85,28 @@ def get_oauth_signing_key() -> str:
     return _get_str("OAUTH_SIGNING_KEY", "")
 
 
+def get_oauth_signing_key_file() -> str:
+    """PEM private-key path. When set, this overrides ``OAUTH_SIGNING_KEY``."""
+    return _get_str("OAUTH_SIGNING_KEY_FILE", "")
+
+
 def get_oauth_algorithm() -> str:
     return _get_str("OAUTH_ALGORITHM", "HS256")
+
+
+def get_oauth_authorize_enabled() -> bool:
+    """Authorization-code + PKCE flow. Off unless explicitly enabled."""
+    return _get_bool("OAUTH_AUTHORIZE_ENABLED", False)
+
+
+def get_financial_allowlist() -> set[str]:
+    """Agent ids that may receive ``mcp:tool:financial`` during the pilot.
+
+    Comma-separated. Whitespace is trimmed and empty entries are ignored.
+    An empty set keeps the normal KYA rules.
+    """
+    raw = os.environ.get("MCP_TRUST_FINANCIAL_ALLOWLIST", "")
+    return {part.strip() for part in raw.split(",") if part.strip()}
 
 
 def get_oauth_token_ttl() -> int:

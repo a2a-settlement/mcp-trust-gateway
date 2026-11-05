@@ -3,10 +3,12 @@
 from mcp_trust_gateway.trust.scope_mapper import (
     KYALevel,
     MCPScope,
+    decide_scopes,
+    default_requirements_for_scope,
+    filter_scopes_by_kya,
     kya_for_scope,
     max_kya_for_scopes,
-    filter_scopes_by_kya,
-    default_requirements_for_scope,
+    narrow_delegated_scopes,
     requirements_from_annotations,
     scope_taxonomy,
 )
@@ -95,6 +97,55 @@ class TestAnnotations:
         assert requirements_from_annotations(None) is None
         assert requirements_from_annotations({}) is None
         assert requirements_from_annotations({"other": 1}) is None
+
+
+class TestPilotAllowlist:
+    def test_empty_allowlist_keeps_kya_rules(self):
+        decision = decide_scopes(
+            {"mcp:read", "mcp:tool:financial"},
+            "agent",
+            0,
+            set(),
+        )
+        assert "mcp:read" in decision.granted
+        assert "mcp:tool:financial" in decision.denied
+        assert decision.reason is None
+
+        allowed = decide_scopes({"mcp:tool:financial"}, "agent", 2, set())
+        assert "mcp:tool:financial" in allowed.granted
+
+    def test_allowlist_grants_listed_agent_at_kya_0(self):
+        decision = decide_scopes(
+            {"mcp:tool:financial"},
+            "agent",
+            0,
+            {"agent"},
+        )
+        assert decision.granted == frozenset({"mcp:tool:financial"})
+        assert decision.reason is None
+
+    def test_allowlist_denies_unlisted_high_kya(self):
+        decision = decide_scopes(
+            {"mcp:tool:financial", "mcp:tool:write"},
+            "agent",
+            3,
+            {"other"},
+        )
+        assert "mcp:tool:financial" in decision.denied
+        assert "mcp:tool:write" in decision.granted
+        assert decision.reason == "not_in_pilot_allowlist"
+
+    def test_exchange_cannot_add_financial(self):
+        decision = narrow_delegated_scopes(
+            {"mcp:read"},
+            {"mcp:read", "mcp:tool:financial"},
+            actor_id="listed",
+            parent_kya=0,
+            allowlist={"listed"},
+        )
+        assert "mcp:tool:financial" not in decision.granted
+        assert "mcp:read" in decision.granted
+        assert decision.reason is None
 
 
 class TestScopeTaxonomy:

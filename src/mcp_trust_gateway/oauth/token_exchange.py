@@ -10,10 +10,26 @@ Each exchange:
   - Applies trust decay (effective_trust *= decay_factor)
   - Reduces spending limits proportionally
   - Extends the delegation chain
+
+Actor identity is not authenticated. ``actor_token_agent_id`` is copied from
+the request body, so this grant only narrows scopes the parent token already
+has. It never adds ``mcp:tool:financial`` because the named actor is on the
+pilot allowlist. When that allowlist is non-empty, financial scope already on
+the parent is kept only if the named actor id is listed; parent KYA is not
+enough. An explicit ``scope`` that still includes financial after intersecting
+with the parent is rejected with 403 ``insufficient_kya_level`` and
+``reason=not_in_pilot_allowlist``. Omitting ``scope`` drops financial for an
+unlisted actor and continues with the remaining parent scopes; if that leaves
+nothing, the same 403 is returned. A caller who already holds a transferable
+parent token that contains financial can keep it by naming an allowlisted id.
+That id is not proof the caller controls the listed agent. The child token's
+``trust.kya_level`` stays the parent token's KYA; this grant does not re-query
+the exchange.
 """
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 
@@ -21,32 +37,34 @@ import jwt as pyjwt
 from starlette.responses import JSONResponse
 
 from ..config import (
-    get_oauth_signing_key,
-    get_oauth_algorithm,
-    get_oauth_issuer,
+    get_financial_allowlist,
+    get_max_delegation_depth,
     get_oauth_audience,
+    get_oauth_issuer,
     get_oauth_token_ttl,
     get_trust_decay_factor,
-    get_max_delegation_depth,
 )
-from ..trust.scope_mapper import filter_scopes_by_kya
+from ..trust.scope_mapper import (
+    MCPScope,
+    kya_denial_body,
+    narrow_delegated_scopes,
+)
 from ..trust.trust_decay import TrustScore, apply_delegation_decay
+from .keys import SigningConfigError, decode_jwt, encode_jwt
+
+logger = logging.getLogger("mcp_trust_gateway.oauth")
 
 CLAIMS_NAMESPACE = "https://a2a-settlement.org/claims"
 
 
 def _decode_parent(token_str: str) -> dict | None:
-    """Decode and validate the parent JWT."""
-    signing_key = get_oauth_signing_key()
-    algorithm = get_oauth_algorithm()
-    audience = get_oauth_audience()
+    """Decode and validate the parent JWT with the verification key.
+
+    HMAC tokens use the shared secret. Asymmetric tokens use the public key
+    derived from the configured private key, not the private key itself.
+    """
     try:
-        return pyjwt.decode(
-            token_str,
-            signing_key,
-            algorithms=[algorithm],
-            audience=audience,
-        )
+        return decode_jwt(token_str, audience=get_oauth_audience())
     except pyjwt.InvalidTokenError:
         return None
 
@@ -66,7 +84,8 @@ async def handle_token_exchange(body: dict) -> JSONResponse:
     subject_token = body.get("subject_token", "")
     subject_token_type = body.get("subject_token_type", "")
     requested_scope = body.get("scope", "")
-    actor_agent_id = body.get("actor_token_agent_id", "")
+    raw_actor = body.get("actor_token_agent_id", "")
+    actor_agent_id = raw_actor.strip() if isinstance(raw_actor, str) else ""
 
     if subject_token_type != "urn:ietf:params:oauth:token-type:jwt":
         return JSONResponse(
@@ -108,13 +127,35 @@ async def handle_token_exchange(body: dict) -> JSONResponse:
             "error_description": f"Maximum delegation depth ({max_depth}) exceeded",
         }, status_code=403)
 
-    # Narrow scopes
-    parent_scopes = set(parent.get("scope", "").split())
-    requested_scopes = set(requested_scope.split()) if requested_scope else parent_scopes
-    child_scopes = parent_scopes & requested_scopes
-
+    # Narrow scopes. The actor id below is not authenticated; see the module docstring.
     parent_kya = int(trust_data.get("kya_level", 0))
-    child_scopes = filter_scopes_by_kya(child_scopes, parent_kya)
+    parent_scopes = {part for part in str(parent.get("scope", "")).split() if part}
+    explicit = isinstance(requested_scope, str) and bool(requested_scope.strip())
+    if explicit:
+        requested_scopes = {part for part in requested_scope.split() if part}
+    else:
+        requested_scopes = set(parent_scopes)
+
+    child_jti = str(uuid.uuid4())
+    child_agent_id = actor_agent_id or f"delegate-{child_jti[:8]}"
+    decision = narrow_delegated_scopes(
+        parent_scopes,
+        requested_scopes,
+        actor_id=child_agent_id,
+        parent_kya=parent_kya,
+        allowlist=get_financial_allowlist(),
+    )
+    financial_denied = (
+        decision.reason == "not_in_pilot_allowlist"
+        and MCPScope.TOOL_FINANCIAL in decision.denied
+    )
+    explicit_financial = explicit and MCPScope.TOOL_FINANCIAL in requested_scopes
+    if financial_denied and (explicit_financial or not decision.granted):
+        return JSONResponse(
+            kya_denial_body(requested_scopes, decision, parent_kya),
+            status_code=403,
+        )
+    child_scopes = set(decision.granted)
 
     if not child_scopes:
         return JSONResponse(
@@ -153,9 +194,6 @@ async def handle_token_exchange(body: dict) -> JSONResponse:
     parent_exp = parent.get("exp", now + 3600)
     child_ttl = min(get_oauth_token_ttl(), int(parent_exp - now))
     child_ttl = max(child_ttl, 60)
-    child_jti = str(uuid.uuid4())
-
-    child_agent_id = actor_agent_id or f"delegate-{child_jti[:8]}"
     child_scope_str = " ".join(sorted(child_scopes))
 
     payload = {
@@ -180,9 +218,20 @@ async def handle_token_exchange(body: dict) -> JSONResponse:
         },
     }
 
-    signing_key = get_oauth_signing_key()
-    algorithm = get_oauth_algorithm()
-    token = pyjwt.encode(payload, signing_key, algorithm=algorithm)
+    try:
+        token = encode_jwt(payload)
+    except SigningConfigError:
+        logger.error("token signing is not configured")
+        return JSONResponse(
+            {"error": "server_error", "error_description": "Token signing is not configured"},
+            status_code=500,
+        )
+    except Exception as exc:
+        logger.error("token signing failed: %s", type(exc).__name__)
+        return JSONResponse(
+            {"error": "server_error", "error_description": "Token signing is not configured"},
+            status_code=500,
+        )
 
     return JSONResponse({
         "access_token": token,
