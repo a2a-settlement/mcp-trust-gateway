@@ -1,4 +1,4 @@
-# Versions tested with Python 3.12 (the droplet's interpreter). Install with:
+# Versions tested with Python 3.12 (the production interpreter). Install with:
 #   pip install -c constraints.txt -e .
 annotated-doc==0.0.5
 annotated-types==0.8.0
